@@ -1,7 +1,13 @@
+import os
+import shutil
 from contextlib import asynccontextmanager
 from datetime import timedelta
+from typing import List
 
-from fastapi import FastAPI, Depends, HTTPException, status, APIRouter
+from fastapi import (
+    FastAPI, Depends, HTTPException, status, APIRouter,
+    UploadFile, File
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
@@ -10,15 +16,13 @@ from . import models, schemas, security
 from .database import engine, Base, get_db
 
 # --- Lifespan and App Initialization ---
-
-# Create all database tables on application startup
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("Creating database tables...")
+    os.makedirs("uploads", exist_ok=True)
     Base.metadata.create_all(bind=engine)
     yield
 
-# Initialize the FastAPI application
 app = FastAPI(lifespan=lifespan)
 
 # Add CORS middleware
@@ -30,19 +34,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Helper Function to Get User by Email ---
+# --- Helper Function (Now only used for registration/login) ---
 def get_user_by_email(db: Session, email: str):
     return db.query(models.User).filter(models.User.email == email).first()
 
 
 # --- Authentication Router ---
-auth_router = APIRouter()
+auth_router = APIRouter(
+    tags=["Authentication"]
+)
 
 @auth_router.post("/users/", response_model=schemas.User)
 def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
-    """
-    Endpoint for user registration.
-    """
     db_user = get_user_by_email(db, email=user.email)
     if db_user:
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -56,10 +59,6 @@ def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
 
 @auth_router.post("/token")
 def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    """
-    Endpoint for user login. Returns a JWT access token.
-    Takes form data with 'username' (which is the email) and 'password'.
-    """
     user = get_user_by_email(db, email=form_data.username)
     if not user or not security.verify_password(form_data.password, user.hashed_password):
         raise HTTPException(
@@ -75,29 +74,52 @@ def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db:
     
     return {"access_token": access_token, "token_type": "bearer"}
 
-# Include the auth router in the main app
+@auth_router.get("/users/me/", response_model=schemas.User)
+async def read_users_me(current_user: models.User = Depends(security.get_current_user)):
+    # This is now much cleaner! The dependency does all the work.
+    return current_user
+
+
+# --- Analysis Job Router ---
+analysis_router = APIRouter(
+    prefix="/analyses",
+    tags=["Analyses"],
+    dependencies=[Depends(security.get_current_user)]
+)
+
+@analysis_router.post("/", response_model=schemas.AnalysisJob, status_code=status.HTTP_201_CREATED)
+async def create_analysis_job(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(security.get_current_user)
+):
+    file_path = os.path.join("uploads", file.filename)
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    db_job = models.AnalysisJob(
+        owner_id=current_user.id,
+        status="pending",
+        results=f"File '{file.filename}' uploaded successfully."
+    )
+    db.add(db_job)
+    db.commit()
+    db.refresh(db_job)
+    
+    return db_job
+
+@analysis_router.get("/", response_model=List[schemas.AnalysisJob])
+def get_user_analysis_jobs(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(security.get_current_user)
+):
+    return db.query(models.AnalysisJob).filter(models.AnalysisJob.owner_id == current_user.id).all()
+
+
+# --- Main App Configuration ---
 app.include_router(auth_router)
+app.include_router(analysis_router)
 
-
-# --- Root Endpoint ---
-@app.get("/")
+@app.get("/", tags=["Root"])
 def read_root():
-    """
-    Root endpoint for the TRACE API.
-    """
     return {"message": "Welcome to the TRACE API"}
-
-# --- Dependency to get current user (for protected routes later) ---
-@app.get("/users/me/", response_model=schemas.User)
-async def read_users_me(token_data: security.TokenData = Depends(security.get_current_user), db: Session = Depends(get_db)):
-    """
-    Example of a protected endpoint.
-    It uses the get_current_user dependency to ensure the user is authenticated.
-    """
-    user = get_user_by_email(db, email=token_data.email)
-    if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
-        )
-    return user
