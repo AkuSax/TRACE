@@ -1,0 +1,53 @@
+# --- Python / Virtual Environments ---
+.env
+.venv
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# --- Database Files ---
+*.db
+*.sqlite3
+
+# --- Node.js / Frontend Dependencies ---
+# This folder contains all downloaded javascript packages and can be huge
+node_modules/
+
+# Vite/React build output directory
+dist/
+
+# Log files
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+
+# --- Bioinformatics Pipeline & Data ---
+# Ignore user uploads and all analysis outputs to keep the repo small
+uploads/
+analysis_output/
+results/
+
+# Ignore large data files that are inputs or outputs of the pipeline
+*.fastq
+*.fq
+*.fastq.gz
+*.fq.gz
+*.bam
+*.bai
+*.cram
+*.crai
+*.vcf
+*.vcf.gz
+*.log
+*.html # For ignoring HTML reports from tools like FastQC
+
+
+# --- OS & IDE Specific ---
+# macOS
+.DS_Store
+
+# VS Code
+.vscode/
