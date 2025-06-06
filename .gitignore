@@ -1,15 +1,38 @@
-# Python cache
+# Python / venv
+# Ignore the Python virtual environment folder and cache files
+venv/
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 
-# Database files
-*.db
-*.sqlite3
+# Snakemake specific
+# Ignore Snakemake's internal metadata/log directory and rule-specific logs
+.snakemake/
+logs/
+results/
 
-# Environment variables
-.env
-.venv
-venv/
-
-# Uploads folder
+# Data, Uploads, and References
+# Ignore directories containing generated data, user uploads, or large reference files.
+data/
 uploads/
+test_data/
+pipeline/references/
+
+# Environment files
+# Contains secrets and local configuration that should not be shared.
+.env
+
+# Frontend / Node.js
+# Ignore Node.js dependency folder and build artifacts
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+npm-debug.log*
+
+# IDE / Editor specific
+.vscode/
+.idea/
+
+# OS specific
+.DS_Store

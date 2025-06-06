@@ -1,0 +1,2 @@
+sample_id	data_type	accession_id	source_url
+test_sample01	WGS	TEST01	/app/test_data/test_sample01.bam

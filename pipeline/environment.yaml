@@ -1,0 +1,16 @@
+name: trace_env
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python=3.9
+  - snakemake-minimal >=7.0
+  - pandas
+  - r-base
+  - r-essentials
+  # Add your bioinformatics tools here
+  # For example:
+  # - finale-toolkit
+  - ichorcna
+  # - samtools

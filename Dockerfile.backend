@@ -1,57 +1,58 @@
 # Dockerfile.backend
 
-# Stage 1: Builder for dependencies
-FROM python:3.9-slim-buster AS builder
+# -----------------------------------------------------------------------------
+# Stage 1: Builder
+#
+# This stage uses micromamba to build a complete, self-contained conda
+# environment with all pipeline and web backend dependencies.
+# -----------------------------------------------------------------------------
+FROM mambaorg/micromamba:1.5.1 AS builder
+
+WORKDIR /app
+
+# Copy all necessary files for installation
+COPY ./requirements.txt ./requirements.txt
+COPY ./pipeline/environment.yaml ./pipeline/environment.yaml
+
+# Create the conda environment called 'trace_env'
+# This installs Snakemake, bio-tools, and other pipeline needs.
+RUN micromamba create -n trace_env -f pipeline/environment.yaml --yes --channel conda-forge --channel bioconda
+
+# Install the web backend's Python dependencies into the SAME environment
+# The 'micromamba run' command ensures pip installs into the correct place.
+RUN micromamba run -n trace_env pip install --no-cache-dir -r requirements.txt
+
+
+# -----------------------------------------------------------------------------
+# Stage 2: Production
+#
+# This stage creates the final, lean image. It starts from a minimal base
+# and copies the entire pre-built conda environment from the builder stage.
+# -----------------------------------------------------------------------------
+FROM debian:buster-slim
 
 # Set environment variables
 ENV PYTHONUNBUFFERED 1
 ENV PYTHONDONTWRITEBYTECODE 1
+# Add the conda environment's bin directory to the PATH
+ENV PATH /opt/conda/envs/trace_env/bin:$PATH
 
-# Create app directory
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    default-libmysqlclient-dev \
-    gcc \
-    && rm -rf /var/lib/apt/lists/*
+# Copy the entire installed conda environment from the builder stage
+COPY --from=builder /opt/conda/envs/trace_env /opt/conda/envs/trace_env
 
-# Copy only requirements to leverage Docker cache
-COPY requirements.txt .
-
-# Install Python dependencies
-# Using --no-cache-dir and --upgrade ensures a clean install
-RUN pip install --no-cache-dir --upgrade pip
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Stage 2: Production image
-FROM python:3.9-slim-buster
-
-# Set environment variables
-ENV PYTHONUNBUFFERED 1
-ENV PYTHONDONTWRITEBYTECODE 1
-
-# Create app directory
-WORKDIR /app
-
-# Copy installed packages from builder stage
-COPY --from=builder /usr/local/lib/python3.9/site-packages /usr/local/lib/python3.9/site-packages
-COPY --from=builder /usr/local/bin /usr/local/bin
-
-# Copy application code
+# Copy your application code
 COPY ./backend /app/backend
-COPY ./.env /app/.env
-COPY ./requirements.txt /app/requirements.txt
+COPY ./pipeline /app/pipeline 
 
-# Create a directory for uploaded files and database
-# This directory will be mounted as a volume for persistence
+# Create directories for mounted volumes
 RUN mkdir -p /app/uploads
+RUN mkdir -p /app/data/db_files
 
 # Expose the port FastAPI will run on
 EXPOSE 8000
 
-# Command to run the FastAPI application with Gunicorn
-# This command will be overridden by docker-compose for the backend service
-# and by the worker service for Celery.
+# The CMD now uses the Python from the Conda environment because of the PATH update.
+# The entrypoint is no longer needed as the PATH is set directly.
 CMD ["gunicorn", "-w", "4", "-k", "uvicorn.workers.UvicornWorker", "backend.main:app", "--bind", "0.0.0.0:8000"]

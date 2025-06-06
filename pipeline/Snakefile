@@ -1,0 +1,312 @@
+# ##############################################################################
+#
+# TRACE: A Snakemake Pipeline for cfDNA Fragmentomics and Methylomics
+# Author: Gemini
+# Version: 1.0.0
+#
+# ##############################################################################
+
+import pandas as pd
+
+# --- 1. Load Configuration & Sample Sheet ---
+configfile: "config.yaml"
+
+# Load sample sheet and get a list of all sample IDs
+SAMPLES_DF = pd.read_csv(config["samples"], sep="\t")
+WGS_SAMPLES = SAMPLES_DF[SAMPLES_DF.data_type == "WGS"]["sample_id"].tolist()
+WGBS_SAMPLES = SAMPLES_DF[SAMPLES_DF.data_type == "WGBS"]["sample_id"].tolist()
+SAMPLES = SAMPLES_DF["sample_id"].tolist() # Keep original list for QC report expand
+
+# --- 2. Target Rule (Defines Final Output) ---
+# This rule drives the pipeline by specifying the desired final files.
+# --- 2. Target Rule (Defines Final Output) ---
+rule all:
+    input:
+        # The ultimate output: a single feature matrix for ML
+        f"{config['output_dir']}/TRACE_v{config['pipeline_version']}_feature_matrix.tsv",
+        # Request a QC report for each sample as a final output
+        expand(f"{config['output_dir']}/{{sample}}/qc/{{sample}}_final_qc_report.html", sample=SAMPLES)
+    message:
+        """
+        TRACE Pipeline Run Summary:
+        - Version: {config[pipeline_version]}
+        - Final feature matrix: {input[0]}
+        - Individual QC reports generated.
+        - Run complete.
+        """
+
+# --- 3. Data Acquisition & Management ---
+
+rule download_wgs_data:
+    output:
+        "data/raw/{sample}.bam"
+    params:
+        sample_sheet=config["samples"]
+    log:
+        "logs/download_wgs/{sample}.log"
+    threads: 1
+    shell:
+        """
+        python pipeline/scripts/download_data.py \\
+            --sample_sheet {params.sample_sheet} \\
+            --sample_id {wildcards.sample} \\
+            --output_dir data/raw/ > {log} 2>&1
+        """
+
+rule download_wgbs_data:
+    output:
+        "data/raw/{sample}.betas.tsv"
+    params:
+        sample_sheet=config["samples"]
+    log:
+        "logs/download_wgbs/{sample}.log"
+    threads: 1
+    shell:
+        """
+        python pipeline/scripts/download_data.py \\
+            --sample_sheet {params.sample_sheet} \\
+            --sample_id {wildcards.sample} \\
+            --output_dir data/raw/ > {log} 2>&1
+        """
+
+# --- 4. Fragmentomics Module (FinaleToolkit + ichorCNA) ---
+# This branch runs if the sample is of type WGS/BAM
+
+rule finale_fragment_metrics:
+    input:
+        bam="data/raw/{sample}.bam"
+    output:
+        # Using temp() to mark for cleanup after consuming rules run
+        fragments=temp(f"{config['output_dir']}/{{sample}}/fragmentomics/{{sample}}.fragments.tsv.gz"),
+        size_plot=f"{config['output_dir']}/{{sample}}/qc/{{sample}}.frag_size.png",
+        summary=f"{config['output_dir']}/{{sample}}/fragmentomics/{{sample}}.frag_summary.tsv"
+    params:
+        prefix=f"{config['output_dir']}/{{sample}}/fragmentomics/{{sample}}",
+        short_frag_thresh=config["fragmentomics"]["short_fragment_threshold"]
+    log:
+        "logs/finale_fragment_metrics/{sample}.log"
+    threads: config["resources"]["default"]["threads"]
+    resources:
+        mem_mb=config["resources"]["default"]["mem_mb"],
+        time_min=config["resources"]["default"]["time_min"]
+    shell:
+        """
+        # This is a conceptual command for FinaleToolkit
+        # 1. Generate fragment file from BAM
+        # 2. Compute metrics
+        {config[tools][finale_toolkit]} bam-to-fragments -i {input.bam} -o {output.fragments} --log-file {log}
+        {config[tools][finale_toolkit]} fragment-stats \
+            --fragments {output.fragments} \
+            --prefix {params.prefix} \
+            --short_threshold {params.short_frag_thresh} \
+            --plot {output.size_plot} \
+            --summary {output.summary} >> {log} 2>&1
+        """
+
+rule ichorCNA:
+    input:
+        bam="data/raw/{sample}.bam"
+    output:
+        # Explicitly list the key outputs. The .params.txt file is needed by the merge rule.
+        params_txt=f"{config['output_dir']}/{{sample}}/fragmentomics/ichorCNA/{{sample}}.params.txt",
+        cnv_plot=f"{config['output_dir']}/{{sample}}/fragmentomics/ichorCNA/{{sample}}.cnv.png",
+        # The done file can still be useful to mark that the whole directory is complete.
+        done=touch(f"{config['output_dir']}/{{sample}}/fragmentomics/ichorCNA/ichorCNA.done")
+    params:
+        outdir=f"{config['output_dir']}/{{sample}}/fragmentomics/ichorCNA",
+        ichor_path=config["fragmentomics"]["ichorCNA"]["path"],
+        mappability=config["fragmentomics"]["ichorCNA"]["mappability"],
+        normal_panel=config["fragmentomics"]["ichorCNA"]["normal_panel"],
+        centromere=config["fragmentomics"]["ichorCNA"]["centromere"]
+    log:
+        "logs/ichorCNA/{sample}.log"
+    threads: config["resources"]["high_mem"]["threads"]
+    resources:
+        mem_mb=config["resources"]["high_mem"]["mem_mb"],
+        time_min=config["resources"]["high_mem"]["time_min"]
+    shell:
+        """
+        # Ensure output directory exists
+        mkdir -p {params.outdir}
+
+        # Example R script call for ichorCNA
+        Rscript {config[tools][ichorCNA_script]} \\
+            --id {wildcards.sample} \\
+            --bam {input.bam} \\
+            --WIG {params.mappability} \\
+            --normalPanel {params.normal_panel} \\
+            --centromere {params.centromere} \\
+            --exons.bed NULL \\
+            --ichorCNA_path {params.ichor_path} \\
+            --outDir {params.outdir} > {log} 2>&1
+        """
+
+# --- 5. Methylomics Module (cfSort/MetDecode/Custom) ---
+# This branch runs if the sample is of type WGBS/Beta-matrix
+
+rule run_tissue_deconvolution:
+    input:
+        betas="data/raw/{sample}.betas.tsv"
+    output:
+        too_props=f"{config['output_dir']}/{{sample}}/methylomics/{{sample}}.too_proportions.tsv",
+        qc_metrics=f"{config['output_dir']}/{{sample}}/methylomics/{{sample}}.methylation_qc.tsv"
+    params:
+        ref_panel=config["methylomics"]["reference_panel"]
+    log:
+        "logs/run_tissue_deconvolution/{sample}.log"
+    threads: config["resources"]["default"]["threads"]
+    resources:
+        mem_mb=config["resources"]["high_mem"]["mem_mb"], # Deconvolution can be memory intensive
+        time_min=config["resources"]["default"]["time_min"]
+    shell:
+        """
+        python pipeline/{config[tools][deconvolution_script]} \\ \
+            --beta_matrix {input.betas} \
+            --ref_panel {params.ref_panel} \
+            --out_props {output.too_props} \
+            --out_qc {output.qc_metrics} > {log} 2>&1
+        """
+
+# --- 6. Extensibility Placeholder ---
+# Example of a future deep learning feature extraction step.
+
+rule deep_learning_feature_extraction:
+    input:
+        # This DL model might operate on fragment-level data
+        fragments=f"{config['output_dir']}/{{sample}}/fragmentomics/{{sample}}.fragments.tsv.gz"
+    output:
+        dl_features=f"{config['output_dir']}/{{sample}}/dl_features/{{sample}}.dl_features.tsv"
+    log:
+        "logs/dl_feature_extraction/{sample}.log"
+    threads: 8 # Assuming GPU/multi-core usage
+    resources:
+        mem_mb=16384,
+        time_min="120",
+        gpu=1 # Request a GPU if your cluster manager supports it
+    shell:
+        """
+        echo "Running placeholder for DL feature extraction on {input.fragments}" > {log}
+        # conceptual command for a pytorch/tensorflow model
+        # python models/extract_dl_features.py --fragments {input.fragments} --model models/FragmentNet_v1.pt --output {output.dl_features}
+
+        # Create a dummy output for pipeline completion
+        echo -e "sample_id\tdl_feature_1\tdl_feature_2" > {output.dl_features}
+        echo -e "{wildcards.sample}\t0.987\t0.123" >> {output.dl_features}
+        """
+
+# --- 6b. QC Report Generation (NEW RULE) ---
+
+rule generate_qc_report:
+    input:
+        # This rule gathers all QC-related outputs for a single WGS sample
+        # Note: This will need to be made more flexible for WGBS-only samples
+        size_plot=f"{config['output_dir']}/{{sample}}/qc/{{sample}}.frag_size.png",
+        cnv_plot=f"{config['output_dir']}/{{sample}}/fragmentomics/ichorCNA/{{sample}}.cnv.png"
+    output:
+        report=f"{config['output_dir']}/{{sample}}/qc/{{sample}}_final_qc_report.html"
+    log:
+        "logs/generate_qc_report/{sample}.log"
+    params:
+        sample_name="{sample}"
+    shell:
+        """
+        # In a real pipeline, this would use MultiQC or an RMarkdown script.
+        # For now, we just create a placeholder HTML file to satisfy the DAG.
+        echo "<html><body>" > {output.report}
+        echo "<h1>QC Report for {params.sample_name}</h1>" >> {output.report}
+        # Note: The image paths must be relative for the HTML to work if opened locally.
+        echo "<p>Fragment Size Plot:</p><img src='../../qc/{params.sample_name}.frag_size.png' width='800'>" >> {output.report}
+        echo "<p>CNV Plot:</p><img src='../fragmentomics/ichorCNA/{params.sample_name}.cnv.png' width='800'>" >> {output.report}
+        echo "</body></html>" >> {output.report}
+        """
+
+# --- 7. Final Aggregation & Cleanup ---
+
+def get_merge_inputs(wildcards):
+    """
+    Gather all feature files for all samples. This function is the key
+    to the final merge step, collecting outputs from different branches.
+    """
+    inputs = {
+        "frag_summary": [],
+        "ichor_summary": [],
+        "meth_props": [],
+        "meth_qc": [],
+        "dl_features": [],
+    }
+    for sample in SAMPLES:
+        sample_info = SAMPLES_DF[SAMPLES_DF.sample_id == sample].iloc[0]
+        # Append files based on the sample's data type
+        if sample_info['data_type'] == 'WGS':
+            inputs["frag_summary"].append(f"{config['output_dir']}/{sample}/fragmentomics/{sample}.frag_summary.tsv")
+            # The actual ichorCNA output file with tumor fraction
+            inputs["ichor_summary"].append(f"{config['output_dir']}/{sample}/fragmentomics/ichorCNA/{sample}.params.txt")
+            inputs["dl_features"].append(f"{config['output_dir']}/{sample}/dl_features/{sample}.dl_features.tsv")
+
+        if sample_info['data_type'] == 'WGBS':
+            inputs["meth_props"].append(f"{config['output_dir']}/{sample}/methylomics/{sample}.too_proportions.tsv")
+            inputs["meth_qc"].append(f"{config['output_dir']}/{sample}/methylomics/{sample}.methylation_qc.tsv")
+
+    return inputs
+
+
+rule metadata_merge:
+    input:
+        # Corrected: Using single curly braces {} inside the expand templates
+        frag_summaries=expand(
+            "{output_dir}/{sample}/fragmentomics/{sample}.frag_summary.tsv",
+            output_dir=config["output_dir"],
+            sample=SAMPLES_DF[SAMPLES_DF.data_type == "WGS"]["sample_id"],
+        ),
+        ichor_summaries=expand(
+            "{output_dir}/{sample}/fragmentomics/ichorCNA/{sample}.params.txt",
+            output_dir=config["output_dir"],
+            sample=SAMPLES_DF[SAMPLES_DF.data_type == "WGS"]["sample_id"],
+        ),
+        meth_props=expand(
+            "{output_dir}/{sample}/methylomics/{sample}.too_proportions.tsv",
+            output_dir=config["output_dir"],
+            sample=SAMPLES_DF[SAMPLES_DF.data_type == "WGBS"]["sample_id"],
+        ),
+        meth_qc=expand(
+            "{output_dir}/{sample}/methylomics/{sample}.methylation_qc.tsv",
+            output_dir=config["output_dir"],
+            sample=SAMPLES_DF[SAMPLES_DF.data_type == "WGBS"]["sample_id"],
+        ),
+        dl_features=expand(
+            "{output_dir}/{sample}/dl_features/{sample}.dl_features.tsv",
+            output_dir=config["output_dir"],
+            sample=SAMPLES_DF[SAMPLES_DF.data_type == "WGS"]["sample_id"],
+        ),
+    output:
+        feature_matrix=f"{config['output_dir']}/TRACE_v{config['pipeline_version']}_feature_matrix.tsv"
+    params:
+        sample_sheet=config["samples"],
+        pipeline_version=config["pipeline_version"]
+    log:
+        "logs/metadata_merge.log"
+    threads: 1
+    resources:
+        mem_mb=4096,
+        time_min="30"
+    shell:
+        """
+        python python pipeline/scripts/merge_features.py \\
+            --sample_sheet {params.sample_sheet} \\
+            --frag_summaries {input.frag_summaries} \\
+            --ichor_summaries {input.ichor_summaries} \\
+            --meth_props {input.meth_props} \\
+            --meth_qc {input.meth_qc} \\
+            --dl_features {input.dl_features} \\
+            --version {params.pipeline_version} \\
+            --output {output.feature_matrix} > {log} 2>&1
+        """
+
+# --- Optional Cleanup Rule ---
+# This rule is not run by default but can be invoked manually.
+# It leverages the temp() markers placed on intermediate files.
+rule cleanup:
+    shell:
+        """
+        snakemake --delete-temp-output -s Snakefile
+        """

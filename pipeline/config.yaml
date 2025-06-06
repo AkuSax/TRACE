@@ -1,0 +1,74 @@
+# --------------------------------------------------- #
+#       TRACE cfDNA Pipeline Configuration (Updated)  #
+# --------------------------------------------------- #
+
+# Versioning
+pipeline_version: "1.0.0"
+
+# --- General Paths & Settings ---
+# Root directory for all outputs
+output_dir: "results"
+
+# Path to the sample sheet. This is a default and will be
+# overridden by the Celery worker for each specific job.
+samples: "pipeline/samples.tsv"
+
+# --- Reference Files ---
+# Paths are relative to the container's working directory (/app)
+ref_genome: "pipeline/references/hg38.fa"
+ref_genes: "pipeline/references/gencode.v38.annotation.gtf"
+cpg_islands: "pipeline/references/cpgIslandExt.bed"
+
+# --- Tool Paths ---
+# These tools will be available in the PATH of the Conda environment,
+# so direct paths are not necessary unless installed elsewhere.
+tools:
+  finale_toolkit: "finale"
+  ichorCNA_script: "/path/to/ichorCNA/runIchorCNA.R"
+  deconvolution_script: "pipeline/scripts/run_deconvolution.py"
+
+# --- Resource Allocation ---
+resources:
+  default:
+    threads: 4
+    mem_mb: 8192 # 8 GB
+    time_min: "240" # 4 hours
+  high_mem:
+    threads: 8
+    mem_mb: 32768 # 32 GB
+    time_min: "720" # 12 hours
+
+# --- Fragmentomics Module Settings ---
+fragmentomics:
+  min_fragment_size: 30
+  max_fragment_size: 700
+  short_fragment_threshold: 150
+  ichorCNA:
+    path: "/usr/local/bin/ichorCNA/"
+    # Paths to the reference files you downloaded
+    mappability: "pipeline/references/hg38.mappability.hoffman.bw" # <--- FINAL CORRECTED PATH
+    centromere: "pipeline/references/hg38.centromere.bed"
+    # IMPORTANT: This is a placeholder. You must create or find a Panel of Normals
+    # that matches your specific sequencing protocol.
+    normal_panel: "pipeline/references/placeholder_panel_of_normals.rds"
+
+# --- Methylomics Module Settings ---
+methylomics:
+  deconvolution_tool: "custom"
+  # IMPORTANT: This is also a placeholder. You need a reference panel of beta
+  # values from known tissues for deconvolution.
+  reference_panel: "pipeline/references/placeholder_methylation_reference.tsv"
+  tissues:
+    - "Lung"
+    - "Breast"
+    - "Colon"
+    - "Liver"
+    - "Stomach"
+    - "Pancreas"
+    - "Bladder"
+    - "Esophagus"
+    - "Adipose"
+    - "Blood"
+
+# --- Data Management ---
+cleanup_intermediates: true

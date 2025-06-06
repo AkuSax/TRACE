@@ -5,22 +5,23 @@ services:
     ports:
       - "6379:6379"
     volumes:
-      - redis_data:/data # Persistent storage for Redis data
+      - redis_data:/data
 
+  # This service is less critical now as the pipeline manages its own environment
   init-db:
     build:
       context: .
-      dockerfile: Dockerfile.backend # Reuse the backend's Dockerfile
+      dockerfile: Dockerfile.backend
     volumes:
-      - ./data/db_files:/app/db_files # Mount the *same* database file volume
+      - ./data/db_files:/app/db_files
     environment:
       - PYTHONPATH=/app
-    command: python backend/init_db.py # Run the initialization script
+    # Run the init script using the micromamba entrypoint
+    command: ["python", "backend/init_db.py"]
     depends_on:
-      - redis # Ensure redis is up if needed, though primarily for backend/worker
-    # It's good practice to make init containers not restart automatically,
-    # as they've done their job once the database is created.
-    restart: "no" # This is important for init containers
+      - redis
+    restart: "no"
+
   backend:
     build:
       context: .
@@ -33,21 +34,29 @@ services:
     depends_on:
       - redis
     volumes:
-      - ./data/db_files:/app/db_files # Persistent storage for SQLite database
-      - ./data/uploads:/app/uploads # Persistent storage for uploaded files
-    command: gunicorn -w 4 -k uvicorn.workers.UvicornWorker backend.main:app --bind 0.0.0.0:8000
+      # Mount the entire project to get pipeline code
+      - .:/app
+      - ./data/db_files:/app/data/db_files # Persistent storage for SQLite
+      - ./data/uploads:/app/uploads       # Persistent storage for uploads
+    command: ["gunicorn", "-w", "4", "-k", "uvicorn.workers.UvicornWorker", "backend.main:app", "--bind", "0.0.0.0:8000"]
 
   worker:
     build:
       context: .
-      dockerfile: Dockerfile.backend # Reuses the backend image for the worker
+      dockerfile: Dockerfile.backend # Reuses the backend image
     restart: unless-stopped
     env_file:
       - .env
     depends_on:
       - redis
-      - backend # Worker needs backend to be up for database access (if any startup tasks depend on it)
-    command: celery -A backend.worker.celery_app worker --loglevel=info
+      - backend
+    volumes:
+      # Mount the entire project to get pipeline code
+      - .:/app
+      - ./data/db_files:/app/data/db_files
+      - ./data/uploads:/app/uploads
+    # Command for the worker also uses micromamba
+    command: ["celery", "-A", "backend.worker.celery_app", "worker", "--loglevel=info"]
 
   frontend:
     build:
@@ -55,9 +64,9 @@ services:
       dockerfile: Dockerfile.frontend
     restart: unless-stopped
     ports:
-      - "3000:80" # Map host port 3000 to container port 80
+      - "3000:80"
     depends_on:
-      - backend # Frontend needs backend to be accessible for API calls
+      - backend
 
 volumes:
   redis_data:

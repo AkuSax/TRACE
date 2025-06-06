@@ -1,4 +1,5 @@
 import os
+import uuid
 import shutil
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -17,7 +18,7 @@ from celery.result import AsyncResult
 # --- Local Imports ---
 from . import models, schemas, security
 from .database import engine, Base, get_db
-from .worker import add_numbers  # Import the Celery task
+from .worker import run_trace_pipeline  # Import the Celery task
 
 # --- Lifespan and App Initialization ---
 @asynccontextmanager
@@ -95,25 +96,39 @@ analysis_router = APIRouter(
 @analysis_router.post("/", response_model=schemas.AnalysisJob, status_code=status.HTTP_201_CREATED)
 async def create_analysis_job(
     file: UploadFile = File(...),
+    # A simple way to get data type from the user. Could be a form field.
+    data_type: str = "WGS", 
     db: Session = Depends(get_db),
     current_user: models.User = Depends(security.get_current_user)
 ):
-    """Handles file uploads and creates an analysis job record."""
-    file_path = os.path.join("uploads", file.filename)
+    """
+    Handles file uploads, creates an analysis job record, and triggers the pipeline.
+    """
+    # Sanitize filename and create a unique ID for this run
+    safe_filename = "".join(c for c in file.filename if c.isalnum() or c in ('.', '_', '-')).strip()
+    unique_id = str(uuid.uuid4().hex)[:8]
+    sample_id = f"{os.path.splitext(safe_filename)[0]}_{unique_id}"
+    
+    file_path = os.path.join("uploads", f"{sample_id}_{safe_filename}")
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
     db_job = models.AnalysisJob(
         owner_id=current_user.id,
         status="pending",
-        results=f"File '{file.filename}' uploaded successfully."
+        results=f"File '{file.filename}' uploaded. Job is queued."
     )
     db.add(db_job)
     db.commit()
     db.refresh(db_job)
     
-    # In a real application, you would trigger your bioinformatics task here
-    # Example: run_bioinformatics_pipeline.delay(db_job.id, file_path)
+    # Trigger the bioinformatics pipeline via Celery
+    run_trace_pipeline.delay(
+        job_id=db_job.id, 
+        input_file_path=file_path,
+        sample_id=sample_id,
+        data_type=data_type
+    )
     
     return db_job
 
