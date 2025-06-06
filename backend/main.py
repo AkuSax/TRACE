@@ -25,7 +25,6 @@ async def lifespan(app: FastAPI):
     """Initializes the application, creating database tables and upload directories."""
     print("Creating database tables...")
     os.makedirs("uploads", exist_ok=True)
-    Base.metadata.create_all(bind=engine)
     yield
 
 app = FastAPI(lifespan=lifespan)

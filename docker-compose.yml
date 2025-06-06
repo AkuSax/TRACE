@@ -7,6 +7,20 @@ services:
     volumes:
       - redis_data:/data # Persistent storage for Redis data
 
+  init-db:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend # Reuse the backend's Dockerfile
+    volumes:
+      - ./data/db_files:/app/db_files # Mount the *same* database file volume
+    environment:
+      - PYTHONPATH=/app
+    command: python backend/init_db.py # Run the initialization script
+    depends_on:
+      - redis # Ensure redis is up if needed, though primarily for backend/worker
+    # It's good practice to make init containers not restart automatically,
+    # as they've done their job once the database is created.
+    restart: "no" # This is important for init containers
   backend:
     build:
       context: .
@@ -19,7 +33,7 @@ services:
     depends_on:
       - redis
     volumes:
-      - ./data/db:/app/trace.db # Persistent storage for SQLite database
+      - ./data/db_files:/app/db_files # Persistent storage for SQLite database
       - ./data/uploads:/app/uploads # Persistent storage for uploaded files
     command: gunicorn -w 4 -k uvicorn.workers.UvicornWorker backend.main:app --bind 0.0.0.0:8000
 

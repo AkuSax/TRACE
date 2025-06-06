@@ -3,7 +3,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
 # Define the database URL for a local SQLite database file
-SQLALCHEMY_DATABASE_URL = "sqlite:///./trace.db"
+SQLALCHEMY_DATABASE_URL = "sqlite:///./db_files/trace.db"
 
 # Create the SQLAlchemy engine
 engine = create_engine(
