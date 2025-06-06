@@ -1,0 +1,57 @@
+# Dockerfile.backend
+
+# Stage 1: Builder for dependencies
+FROM python:3.9-slim-buster AS builder
+
+# Set environment variables
+ENV PYTHONUNBUFFERED 1
+ENV PYTHONDONTWRITEBYTECODE 1
+
+# Create app directory
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    default-libmysqlclient-dev \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy only requirements to leverage Docker cache
+COPY requirements.txt .
+
+# Install Python dependencies
+# Using --no-cache-dir and --upgrade ensures a clean install
+RUN pip install --no-cache-dir --upgrade pip
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Stage 2: Production image
+FROM python:3.9-slim-buster
+
+# Set environment variables
+ENV PYTHONUNBUFFERED 1
+ENV PYTHONDONTWRITEBYTECODE 1
+
+# Create app directory
+WORKDIR /app
+
+# Copy installed packages from builder stage
+COPY --from=builder /usr/local/lib/python3.9/site-packages /usr/local/lib/python3.9/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+
+# Copy application code
+COPY ./backend /app/backend
+COPY ./.env /app/.env
+COPY ./requirements.txt /app/requirements.txt
+
+# Create a directory for uploaded files and database
+# This directory will be mounted as a volume for persistence
+RUN mkdir -p /app/uploads
+
+# Expose the port FastAPI will run on
+EXPOSE 8000
+
+# Command to run the FastAPI application with Gunicorn
+# This command will be overridden by docker-compose for the backend service
+# and by the worker service for Celery.
+CMD ["gunicorn", "-w", "4", "-k", "uvicorn.workers.UvicornWorker", "backend.main:app", "--bind", "0.0.0.0:8000"]
