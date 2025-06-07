@@ -8,3 +8,5 @@ python-multipart
 celery
 redis
 gunicorn 
+finaletoolkit
+pandas

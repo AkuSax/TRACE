@@ -75,33 +75,59 @@ rule bam_to_wig:
         bam="data/raw/{sample}.bam"
     output:
         wig=temp(f"{config['output_dir']}/{{sample}}/fragmentomics/{{sample}}.wig")
+    params:
+        window_size=1000000 # 1Mb windows
     log:
         "logs/bam_to_wig/{sample}.log"
+    threads: 4
     shell:
         """
-        # First, create a genome file with chromosome sizes from your reference FASTA
-        samtools faidx {config.ref_genome}
-        cut -f1,2 {config.ref_genome}.fai > genome.txt
+        # Create a genome file with chromosome sizes FROM THE EXISTING .fai FILE
+        cut -f1,2 {config[ref_genome]}.fai > genome.txt
 
         # Create 1Mb windows across the genome
-        bedtools makewindows -g genome.txt -w 1000000 > windows.bed
+        bedtools makewindows -g genome.txt -w {params.window_size} > windows.bed
 
-        # Calculate coverage in those windows and format as a WIG-like file for ichorCNA
-        # Note: ichorCNA's R script is robust and can parse this simple 4-column format.
-        bedtools coverage -a windows.bed -b {input.bam} | awk '{{print $$1"\\t"$$2"\\t"$$3"\\t"$$4}}' > {output.wig}
+        # Calculate coverage in those windows...
+        bedtools coverage -a windows.bed -b {input.bam} | awk '{{print $$1"\\t"$$2"\\t"$$3"\\t"$$4}}' > {output.wig} 2> {log}
+        """
+
+# Generate GC Wiggle File from Reference Genome
+rule generate_gc_wig:
+    input:
+        fasta=config["ref_genome"]
+    output:
+        gc_wig="pipeline/references/hg38.gc1000kb.wig" # Using 1Mb windows
+    log:
+        "logs/generate_gc_wig.log"
+    params:
+        window_size=1000000 # 1Mb windows
+    shell:
+        """
+        # Create a genome file with chromosome sizes
+        samtools faidx {input.fasta}
+        cut -f1,2 {input.fasta}.fai > genome.txt
+
+        # Create 1Mb windows across the genome
+        bedtools makewindows -g genome.txt -w {params.window_size} > windows.bed
+
+        # Calculate GC content for each window and format as WIG
+        bedtools nuc -fi {input.fasta} -bed windows.bed | \
+        tail -n +2 | \
+        awk '{{print "fixedStep chrom="$$1" start="$$2+1" step={params.window_size} span={params.window_size}\\n"$$5}}' \
+        > {output.gc_wig} 2> {log}
+
+        # Clean up intermediate files
+        rm genome.txt windows.bed
         """
 
 rule finale_fragment_metrics:
     input:
         bam="data/raw/{sample}.bam"
     output:
-        # Using temp() to mark for cleanup after consuming rules run
         fragments=temp(f"{config['output_dir']}/{{sample}}/fragmentomics/{{sample}}.fragments.tsv.gz"),
         size_plot=f"{config['output_dir']}/{{sample}}/qc/{{sample}}.frag_size.png",
         summary=f"{config['output_dir']}/{{sample}}/fragmentomics/{{sample}}.frag_summary.tsv"
-    params:
-        prefix=f"{config['output_dir']}/{{sample}}/fragmentomics/{{sample}}",
-        short_frag_thresh=config["fragmentomics"]["short_fragment_threshold"]
     log:
         "logs/finale_fragment_metrics/{sample}.log"
     threads: config["resources"]["default"]["threads"]
@@ -110,35 +136,27 @@ rule finale_fragment_metrics:
         time_min=config["resources"]["default"]["time_min"]
     shell:
         """
-        # This is a conceptual command for FinaleToolkit
-        # 1. Generate fragment file from BAM
-        # 2. Compute metrics
-        {config[tools][finale_toolkit]} bam-to-fragments -i {input.bam} -o {output.fragments} --log-file {log}
-        {config[tools][finale_toolkit]} fragment-stats \
-            --fragments {output.fragments} \
-            --prefix {params.prefix} \
-            --short_threshold {params.short_frag_thresh} \
-            --plot {output.size_plot} \
-            --summary {output.summary} >> {log} 2>&1
-        """
+        # This is now a placeholder rule that just creates empty output files.
+        touch {output.fragments}
+        touch {output.size_plot}
+        touch {output.summary}
+        echo "Placeholder for finale_fragment_metrics" > {log}
+        """ 
 
 rule ichorCNA:
     input:
-        # Corrected: Input is now the WIG file from the new rule
-        wig=f"{config['output_dir']}/{{sample}}/fragmentomics/{{sample}}.wig"
+        wig=f"{config['output_dir']}/{{sample}}/fragmentomics/{{sample}}.wig",
+        # Add the GC Wiggle file as an input dependency
+        gc_wig="pipeline/references/hg38.gc1000kb.wig"
     output:
-        # Outputs remain the same
         params_txt=f"{config['output_dir']}/{{sample}}/fragmentomics/ichorCNA/{{sample}}.params.txt",
         cnv_plot=f"{config['output_dir']}/{{sample}}/fragmentomics/ichorCNA/{{sample}}.cnv.png",
         done=touch(f"{config['output_dir']}/{{sample}}/fragmentomics/ichorCNA/ichorCNA.done")
     params:
-        # Get paths from config for the R script's arguments
         outdir=f"{config['output_dir']}/{{sample}}/fragmentomics/ichorCNA",
         mapWig=config["fragmentomics"]["ichorCNA"]["mappability"],
-        gcWig="pipeline/references/placeholder_gc_wig.wig", # IMPORTANT: You will need to find/create a GC content WIG file
         centromere=config["fragmentomics"]["ichorCNA"]["centromere"],
         normalPanel=config["fragmentomics"]["ichorCNA"]["normal_panel"]
-        gcWig="pipeline/references/hg38.gc5Base.wig"
     log:
         "logs/ichorCNA/{sample}.log"
     threads: config["resources"]["high_mem"]["threads"]
@@ -147,14 +165,13 @@ rule ichorCNA:
         time_min=config["resources"]["high_mem"]["time_min"]
     shell:
         """
-        # The official run script does not create the output directory, so we do it here.
         mkdir -p {params.outdir}
 
-        # Corrected shell command using the arguments from the R script you provided
+        # Corrected shell command using the new gc_wig input file
         Rscript pipeline/scripts/run_ichorCNA.R \\
             --id {wildcards.sample} \\
             --WIG {input.wig} \\
-            --gcWig {params.gcWig} \\
+            --gcWig {input.gc_wig} \\
             --mapWig {params.mapWig} \\
             --centromere {params.centromere} \\
             --normalPanel {params.normalPanel} \\
