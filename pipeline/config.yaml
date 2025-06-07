@@ -24,7 +24,6 @@ cpg_islands: "pipeline/references/cpgIslandExt.bed"
 # so direct paths are not necessary unless installed elsewhere.
 tools:
   finale_toolkit: "finale"
-  ichorCNA_script: "/path/to/ichorCNA/runIchorCNA.R"
   deconvolution_script: "pipeline/scripts/run_deconvolution.py"
 
 # --- Resource Allocation ---

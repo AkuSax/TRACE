@@ -9,8 +9,6 @@ dependencies:
   - pandas
   - r-base
   - r-essentials
-  # Add your bioinformatics tools here
-  # For example:
-  # - finale-toolkit
-  - ichorcna
-  # - samtools
+  - zlib
+  - xz
+  - bedtools

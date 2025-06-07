@@ -18,8 +18,6 @@ WGBS_SAMPLES = SAMPLES_DF[SAMPLES_DF.data_type == "WGBS"]["sample_id"].tolist()
 SAMPLES = SAMPLES_DF["sample_id"].tolist() # Keep original list for QC report expand
 
 # --- 2. Target Rule (Defines Final Output) ---
-# This rule drives the pipeline by specifying the desired final files.
-# --- 2. Target Rule (Defines Final Output) ---
 rule all:
     input:
         # The ultimate output: a single feature matrix for ML
@@ -72,6 +70,27 @@ rule download_wgbs_data:
 # --- 4. Fragmentomics Module (FinaleToolkit + ichorCNA) ---
 # This branch runs if the sample is of type WGS/BAM
 
+rule bam_to_wig:
+    input:
+        bam="data/raw/{sample}.bam"
+    output:
+        wig=temp(f"{config['output_dir']}/{{sample}}/fragmentomics/{{sample}}.wig")
+    log:
+        "logs/bam_to_wig/{sample}.log"
+    shell:
+        """
+        # First, create a genome file with chromosome sizes from your reference FASTA
+        samtools faidx {config.ref_genome}
+        cut -f1,2 {config.ref_genome}.fai > genome.txt
+
+        # Create 1Mb windows across the genome
+        bedtools makewindows -g genome.txt -w 1000000 > windows.bed
+
+        # Calculate coverage in those windows and format as a WIG-like file for ichorCNA
+        # Note: ichorCNA's R script is robust and can parse this simple 4-column format.
+        bedtools coverage -a windows.bed -b {input.bam} | awk '{{print $$1"\\t"$$2"\\t"$$3"\\t"$$4}}' > {output.wig}
+        """
+
 rule finale_fragment_metrics:
     input:
         bam="data/raw/{sample}.bam"
@@ -105,19 +124,21 @@ rule finale_fragment_metrics:
 
 rule ichorCNA:
     input:
-        bam="data/raw/{sample}.bam"
+        # Corrected: Input is now the WIG file from the new rule
+        wig=f"{config['output_dir']}/{{sample}}/fragmentomics/{{sample}}.wig"
     output:
-        # Explicitly list the key outputs. The .params.txt file is needed by the merge rule.
+        # Outputs remain the same
         params_txt=f"{config['output_dir']}/{{sample}}/fragmentomics/ichorCNA/{{sample}}.params.txt",
         cnv_plot=f"{config['output_dir']}/{{sample}}/fragmentomics/ichorCNA/{{sample}}.cnv.png",
-        # The done file can still be useful to mark that the whole directory is complete.
         done=touch(f"{config['output_dir']}/{{sample}}/fragmentomics/ichorCNA/ichorCNA.done")
     params:
+        # Get paths from config for the R script's arguments
         outdir=f"{config['output_dir']}/{{sample}}/fragmentomics/ichorCNA",
-        ichor_path=config["fragmentomics"]["ichorCNA"]["path"],
-        mappability=config["fragmentomics"]["ichorCNA"]["mappability"],
-        normal_panel=config["fragmentomics"]["ichorCNA"]["normal_panel"],
-        centromere=config["fragmentomics"]["ichorCNA"]["centromere"]
+        mapWig=config["fragmentomics"]["ichorCNA"]["mappability"],
+        gcWig="pipeline/references/placeholder_gc_wig.wig", # IMPORTANT: You will need to find/create a GC content WIG file
+        centromere=config["fragmentomics"]["ichorCNA"]["centromere"],
+        normalPanel=config["fragmentomics"]["ichorCNA"]["normal_panel"]
+        gcWig="pipeline/references/hg38.gc5Base.wig"
     log:
         "logs/ichorCNA/{sample}.log"
     threads: config["resources"]["high_mem"]["threads"]
@@ -126,18 +147,17 @@ rule ichorCNA:
         time_min=config["resources"]["high_mem"]["time_min"]
     shell:
         """
-        # Ensure output directory exists
+        # The official run script does not create the output directory, so we do it here.
         mkdir -p {params.outdir}
 
-        # Example R script call for ichorCNA
-        Rscript {config[tools][ichorCNA_script]} \\
+        # Corrected shell command using the arguments from the R script you provided
+        Rscript pipeline/scripts/run_ichorCNA.R \\
             --id {wildcards.sample} \\
-            --bam {input.bam} \\
-            --WIG {params.mappability} \\
-            --normalPanel {params.normal_panel} \\
+            --WIG {input.wig} \\
+            --gcWig {params.gcWig} \\
+            --mapWig {params.mapWig} \\
             --centromere {params.centromere} \\
-            --exons.bed NULL \\
-            --ichorCNA_path {params.ichor_path} \\
+            --normalPanel {params.normalPanel} \\
             --outDir {params.outdir} > {log} 2>&1
         """
 
