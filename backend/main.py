@@ -18,7 +18,7 @@ from celery.result import AsyncResult
 # --- Local Imports ---
 from . import models, schemas, security
 from .database import engine, Base, get_db
-from .worker import run_trace_pipeline  # Import the Celery task
+from .worker import run_trace_pipeline, add_numbers  # Import Celery tasks
 
 # --- Lifespan and App Initialization ---
 @asynccontextmanager

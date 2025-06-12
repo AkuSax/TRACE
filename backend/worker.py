@@ -20,6 +20,12 @@ celery_app.conf.update(
     enable_utc=True,
 )
 
+# Simple demo task for verifying Celery functionality
+@celery_app.task(name="add_numbers")
+def add_numbers(x: int, y: int) -> int:
+    """Return the sum of two integers."""
+    return x + y
+
 @celery_app.task(bind=True)
 def run_trace_pipeline(self, job_id: int, input_file_path: str, sample_id: str, data_type: str):
     """
